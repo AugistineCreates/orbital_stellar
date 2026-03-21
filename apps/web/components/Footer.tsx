@@ -24,8 +24,8 @@ const linkStyle: React.CSSProperties = {
 
 export default function Footer() {
   return (
-    <footer style={{ borderTop: '1px solid var(--border)', padding: '80px 32px 0' }}>
-      <div style={{ maxWidth: 'var(--max-width)', margin: '0 auto' }}>
+    <footer style={{ borderTop: '1px solid var(--border)', padding: '80px 52px 0' }}>
+      <div>
         {/* 4-column grid */}
         <div
           style={{

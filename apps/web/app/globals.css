@@ -3,15 +3,15 @@
 @tailwind utilities;
 
 :root {
-  --bg: #080808;
+  --bg: #000000;
   --surface: #111111;
   --surface2: #1a1a1a;
   --border: rgba(255, 255, 255, 0.06);
   --border-hover: rgba(255, 255, 255, 0.12);
-  --text: #f2f2f2;
+  --text: #ffffff;
   --muted: #555555;
   --muted2: #888888;
-  --accent: #e8ff47;
+  --accent: #ff5f47;
   --font-heading: var(--font-instrument-serif), 'Georgia', serif;
   --font-sans: var(--font-geist-sans), system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
