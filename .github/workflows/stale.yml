@@ -2,11 +2,12 @@ name: Stale
 
 on:
   schedule:
-    - cron: 0 9 * * *
+    - cron: 0 9 * * 1   # weekly, Monday — was daily (0 9 * * *)
 
 jobs:
   stale:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/stale@v9
         with:
@@ -15,4 +16,4 @@ jobs:
           days-before-stale: 30
           days-before-close: 7
           exempt-issue-labels: "pinned,good first issue,help wanted"
-          exempt-pr-labels: "pinned"
+          exempt-pr-labels: "pinned,draft,wip"

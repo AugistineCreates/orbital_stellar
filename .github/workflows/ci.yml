@@ -2,24 +2,33 @@ name: CI
 
 on:
   push:
-    branches: ["**"]   # all branches, not just main
+    branches: ["**"]
   pull_request:
-    branches: ["**"]   # all branches, not just main
+    branches: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        node-version: [20, 22]
+      fail-fast: false
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v4
         with:
           version: 10
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies

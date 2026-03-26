@@ -5,13 +5,60 @@ on:
     tags:
       - "v*"
 
+# cancel-in-progress: false — never interrupt an in-flight release
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      - run: echo "Release placeholder — implement changelog generation and GitHub release"
+          fetch-depth: 0   # full history needed for changelog generation
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # ── Build and test gate ───────────────────────────────────────────────
+      # The release is aborted if any of these steps fail — a broken build
+      # or failing tests must never result in a published release.
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck pulse-core
+        run: pnpm tsc --noEmit -p packages/pulse-core/tsconfig.json
+
+      - name: Typecheck pulse-webhooks
+        run: pnpm tsc --noEmit -p packages/pulse-webhooks/tsconfig.json
+
+      - name: Typecheck pulse-notify
+        run: pnpm tsc --noEmit -p packages/pulse-notify/tsconfig.json
+
+      - name: Typecheck apps/web
+        run: pnpm tsc --noEmit -p apps/web/tsconfig.json
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Run tests
+        run: pnpm -r --if-present test
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
