@@ -56,8 +56,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Typecheck pulse-core
-        run: pnpm tsc --noEmit -p packages/pulse-core/tsconfig.json
+      - name: Build pulse-core
+        run: pnpm tsc -p packages/pulse-core/tsconfig.json
       - name: Typecheck pulse-webhooks
         run: pnpm tsc --noEmit -p packages/pulse-webhooks/tsconfig.json
       - name: Typecheck pulse-notify
