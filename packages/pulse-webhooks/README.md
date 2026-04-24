@@ -64,6 +64,7 @@ Attaches a delivery driver to a `Watcher`. Every event the watcher emits is deli
 | `config.secret` | `string` | — | Shared secret used to sign payloads |
 | `config.retries` | `number` | `3` | Number of retry attempts before emitting `webhook.failed` |
 | `config.deliveryTimeoutMs` | `number` | `10_000` | Abort threshold for each HTTP attempt |
+| `config.allowPrivateNetworks` | `boolean` | `false` | If true, bypass SSRF checks for local/private IP ranges |
 
 ### `verifyWebhook(payload, signature, secret)` → `NormalizedEvent | null`
 
@@ -89,6 +90,14 @@ Uses `crypto.timingSafeEqual` under the hood — do not roll your own comparison
 - **Treat the secret like a password.** Store it in a secrets manager, not a config file.
 - **Enforce HTTPS.** The reference server (`apps/server`) rejects non-HTTPS URLs at registration time.
 - **Bound the payload.** On the receiver side, cap body size with `express.json({ limit: "100kb" })` or equivalent.
+
+## Network safety
+
+`pulse-webhooks` protects against SSRF (Server-Side Request Forgery) by validating every delivery target.
+
+- **Rejected ranges:** By default, deliveries to loopback (`127.0.0.0/8`, `::1`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and link-local (`169.254.0.0/16`) addresses are blocked.
+- **Rebinding defense:** DNS resolution is verified against the blocklist before delivery to prevent DNS rebinding attacks.
+- **Configuration:** To allow deliveries to private or local networks (e.g. for development), set `allowPrivateNetworks: true` in the `WebhookDelivery` config.
 
 ## Current limitations
 
