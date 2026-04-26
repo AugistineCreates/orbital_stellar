@@ -440,4 +440,75 @@ describe("pulse-core EventEngine", () => {
       expect(otherHandler).not.toHaveBeenCalled();
     });
   });
+
+  describe("account_merge → account.merged", () => {
+    function makeAccountMergeRecord(
+      overrides: Record<string, unknown>
+    ): Record<string, unknown> {
+      return {
+        type: "account_merge",
+        account: "GSRC",
+        into: "GDEST",
+        created_at: "2026-04-26T12:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    it("normalizes account_merge into account.merged", () => {
+      const engine = new EventEngine({ network: "testnet" });
+      const normalize = (
+        engine as unknown as {
+          normalize(record: unknown): unknown;
+        }
+      ).normalize.bind(engine);
+
+      const normalized = normalize(makeAccountMergeRecord({}));
+
+      expect(normalized).toEqual({
+        type: "account.merged",
+        source: "GSRC",
+        destination: "GDEST",
+        timestamp: "2026-04-26T12:00:00.000Z",
+        raw: expect.objectContaining({ type: "account_merge" }),
+      });
+    });
+
+    it("routes account.merged to both source and destination watchers", () => {
+      const engine = new EventEngine({ network: "testnet" });
+      const srcWatcher = engine.subscribe("GSRC");
+      const destWatcher = engine.subscribe("GDEST");
+      const otherWatcher = engine.subscribe("GOTHER");
+
+      const srcHandler = vi.fn();
+      const destHandler = vi.fn();
+      const otherHandler = vi.fn();
+
+      srcWatcher.on("account.merged", srcHandler);
+      destWatcher.on("account.merged", destHandler);
+      otherWatcher.on("account.merged", otherHandler);
+
+      engine.start();
+      latestStream().handlers.onmessage(makeAccountMergeRecord({}));
+
+      expect(srcHandler).toHaveBeenCalledOnce();
+      expect(srcHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "account.merged",
+          source: "GSRC",
+          destination: "GDEST",
+        })
+      );
+
+      expect(destHandler).toHaveBeenCalledOnce();
+      expect(destHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "account.merged",
+          source: "GSRC",
+          destination: "GDEST",
+        })
+      );
+
+      expect(otherHandler).not.toHaveBeenCalled();
+    });
+  });
 });

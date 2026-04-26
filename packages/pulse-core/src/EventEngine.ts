@@ -1,6 +1,7 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { Watcher } from "./Watcher.js";
 import type {
+  AccountMergeEvent,
   AccountOptionsChanges,
   AccountOptionsEvent,
   AccountOptionsEventType,
@@ -15,7 +16,10 @@ import type {
 } from "./index.js";
 
 type PendingPaymentEvent = Omit<PaymentEvent, "type"> & { type: "unknown" };
-type NormalizedEventOrPending = PendingPaymentEvent | AccountOptionsEvent;
+type NormalizedEventOrPending =
+  | PendingPaymentEvent
+  | AccountOptionsEvent
+  | AccountMergeEvent;
 
 type StreamCallbacks = {
   onmessage: (record: unknown) => void;
@@ -243,6 +247,16 @@ export class EventEngine {
       return this.normalizeSetOptions(r, record);
     }
 
+    if (r.type === "account_merge") {
+      return {
+        type: "account.merged",
+        source: r.account as string,
+        destination: r.into as string,
+        timestamp: r.created_at as string,
+        raw: record,
+      };
+    }
+
     return null;
   }
 
@@ -296,6 +310,21 @@ export class EventEngine {
       if (watcher) {
         watcher.emit("account.options_changed", event);
         watcher.emit("*", event);
+      }
+      return;
+    }
+
+    if (event.type === "account.merged") {
+      const sourceWatcher = this.registry.get(event.source);
+      if (sourceWatcher) {
+        sourceWatcher.emit("account.merged", event);
+        sourceWatcher.emit("*", event);
+      }
+
+      const destinationWatcher = this.registry.get(event.destination);
+      if (destinationWatcher) {
+        destinationWatcher.emit("account.merged", event);
+        destinationWatcher.emit("*", event);
       }
       return;
     }
