@@ -21,6 +21,7 @@ export class WebhookDelivery {
     this.config = {
       retries: 3,
       deliveryTimeoutMs: 10000,
+      random: Math.random,
       ...config,
       urls: Array.isArray(config.url) ? [...config.url] : [config.url],
     };
@@ -70,7 +71,8 @@ export class WebhookDelivery {
       const errorMessage = this.getErrorMessage(err);
 
       if (attempt < this.config.retries) {
-        const delay = Math.pow(2, attempt - 1) * 1000;
+        const exponentialDelay = Math.pow(2, attempt - 1) * 1000;
+        const delay = Math.floor(this.config.random() * exponentialDelay);
         const retryTimer = setTimeout(() => {
           this.retryTimers.delete(retryTimer);
           void this.deliverToUrl(event, url, attempt + 1);
