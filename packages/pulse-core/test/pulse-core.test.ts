@@ -112,8 +112,30 @@ describe("pulse-core EventEngine", () => {
     expect(registry.size).toBe(2);
 
     engine.stop();
+ 
+     expect(registry.size).toBe(0);
+   });
+ 
+  it("empties the registry but keeps the stream open when unsubscribeAll() is called", () => {
+    const engine = new EventEngine({ network: "testnet" });
+    engine.subscribe("GABC");
+    engine.subscribe("GDEF");
+    engine.start();
+
+    const registry = (engine as unknown as { registry: Map<string, unknown> })
+      .registry;
+    const isRunning = (engine as unknown as { isRunning: boolean }).isRunning;
+
+    expect(registry.size).toBe(2);
+    expect(isRunning).toBe(true);
+    expect(streamInstances).toHaveLength(1);
+    expect(streamInstances[0]?.close).not.toHaveBeenCalled();
+
+    engine.unsubscribeAll();
 
     expect(registry.size).toBe(0);
+    expect((engine as unknown as { isRunning: boolean }).isRunning).toBe(true);
+    expect(streamInstances[0]?.close).not.toHaveBeenCalled();
   });
 
   it("returns null and warns when a required payment field is missing", () => {

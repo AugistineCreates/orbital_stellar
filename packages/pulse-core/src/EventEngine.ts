@@ -77,6 +77,17 @@ export class EventEngine {
     this.registry.get(address)?.stop();
   }
 
+  /**
+   * Drops every watcher in the registry, effectively draining all subscriptions.
+   * Unlike {@link stop}, this method does NOT close the underlying SSE stream,
+   * allowing the engine to stay active for future subscriptions.
+   */
+  unsubscribeAll(): void {
+    for (const watcher of this.registry.values()) {
+      watcher.stop();
+    }
+  }
+
   start(): void {
     if (this.isRunning || this.reconnectTimer) {
       console.warn(
