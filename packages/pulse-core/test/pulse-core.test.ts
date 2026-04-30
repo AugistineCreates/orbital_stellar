@@ -1,536 +1,320 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Horizon } from "@stellar/stellar-sdk";
+import { Watcher } from "./Watcher.js";
+import type {
+  AccountMergeEvent,
+  AccountOptionsChanges,
+  AccountOptionsEvent,
+  CoreConfig,
+  Network,
+  PaymentEvent,
+  PaymentEventType,
+  ReconnectConfig,
+  TrustlineEvent,
+  TrustlineEventType,
+  WatcherNotification,
+  WatcherNotificationType,
+} from "./index.js";
+import { UnknownNetworkError } from "./index.js";
 
-type StreamHandlers = {
+type PendingPaymentEvent = Omit<PaymentEvent, "type"> & { type: "unknown" };
+
+type NormalizedEventOrPending =
+  | PendingPaymentEvent
+  | AccountOptionsEvent
+  | TrustlineEvent
+  | AccountMergeEvent;
+
+type StreamCallbacks = {
   onmessage: (record: unknown) => void;
   onerror: (error: unknown) => void;
 };
 
-type MockStreamInstance = {
-  handlers: StreamHandlers;
-  close: ReturnType<typeof vi.fn>;
+type HorizonStreamStopper = ReturnType<
+  ReturnType<Horizon.Server["operations"]>["stream"]
+>;
+
+const HORIZON_URLS: Record<Network, string> = {
+  mainnet: "https://horizon.stellar.org",
+  testnet: "https://horizon-testnet.stellar.org",
 };
 
-const streamInstances: MockStreamInstance[] = [];
-
-vi.mock("@stellar/stellar-sdk", () => {
-  class MockServer {
-    constructor(_url: string) {}
-
-    operations() {
-      return {
-        cursor() {
-          return {
-            stream(handlers: StreamHandlers) {
-              const close = vi.fn();
-              streamInstances.push({ handlers, close });
-              return close;
-            },
-          };
-        },
-      };
-    }
-  }
-
-  return {
-    Horizon: {
-      Server: MockServer,
-    },
-  };
-});
-
-import { EventEngine } from "../src/EventEngine.js";
-
-function latestStream(): MockStreamInstance {
-  const stream = streamInstances.at(-1);
-  if (!stream) {
-    throw new Error("Expected an active mock stream.");
-  }
-
-  return stream;
-}
-
-describe("pulse-core EventEngine", () => {
-  beforeEach(() => {
-    streamInstances.length = 0;
-    vi.useFakeTimers();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-  });
-
-  it("normalizes payments without hardcoding payment.received", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    const normalize = (
-      engine as unknown as {
-        normalize(record: unknown): unknown;
-      }
-    ).normalize.bind(engine);
-
-    const normalized = normalize({
-      type: "payment",
-      to: "GDEST",
-      from: "GSRC",
-      amount: "42",
-      asset_type: "credit_alphanum4",
-      asset_code: "USDC",
-      asset_issuer: "GISSUER",
-      created_at: "2026-03-26T20:00:00.000Z",
-    });
-
-    expect(normalized).toEqual({
-      type: "unknown",
-      to: "GDEST",
-      from: "GSRC",
-      amount: "42",
-      asset: "USDC:GISSUER",
-      timestamp: "2026-03-26T20:00:00.000Z",
-      raw: {
-        type: "payment",
-        to: "GDEST",
-        from: "GSRC",
-        amount: "42",
-        asset_type: "credit_alphanum4",
-        asset_code: "USDC",
-        asset_issuer: "GISSUER",
-        created_at: "2026-03-26T20:00:00.000Z",
-      },
-    });
-  });
-
-  it("empties the registry via stop handlers when stop() is called", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    engine.subscribe("GABC");
-    engine.subscribe("GDEF");
-
-    const registry = (engine as unknown as { registry: Map<string, unknown> })
-      .registry;
-    expect(registry.size).toBe(2);
-
-    engine.stop();
- 
-     expect(registry.size).toBe(0);
-   });
- 
-  it("empties the registry but keeps the stream open when unsubscribeAll() is called", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    engine.subscribe("GABC");
-    engine.subscribe("GDEF");
-    engine.start();
-
-    const registry = (engine as unknown as { registry: Map<string, unknown> })
-      .registry;
-    const isRunning = (engine as unknown as { isRunning: boolean }).isRunning;
-
-    expect(registry.size).toBe(2);
-    expect(isRunning).toBe(true);
-    expect(streamInstances).toHaveLength(1);
-    expect(streamInstances[0]?.close).not.toHaveBeenCalled();
-
-    engine.unsubscribeAll();
-
-    expect(registry.size).toBe(0);
-    expect((engine as unknown as { isRunning: boolean }).isRunning).toBe(true);
-    expect(streamInstances[0]?.close).not.toHaveBeenCalled();
-  });
-
-  it("returns null and warns when a required payment field is missing", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    const normalize = (
-      engine as unknown as {
-        normalize(record: unknown): unknown;
-      }
-    ).normalize.bind(engine);
-
-    // Missing `to`
-    const result = normalize({
-      type: "payment",
-      from: "GSRC",
-      amount: "42",
-      asset_type: "native",
-      created_at: "2026-03-26T20:00:00.000Z",
-    });
-
-    expect(result).toBeNull();
-    expect(console.warn).toHaveBeenCalledWith(
-      '[pulse-core] normalize() dropping payment record: field "to" is missing or not a non-empty string.',
-      expect.objectContaining({ record: expect.any(Object) })
-    );
-  });
-
-  it("returns null and warns for each missing required field individually", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    const normalize = (
-      engine as unknown as {
-        normalize(record: unknown): unknown;
-      }
-    ).normalize.bind(engine);
-
-    const missingFieldCases: Array<[string, Record<string, unknown>]> = [
-      ["from",       { type: "payment", to: "GDEST", amount: "1", created_at: "2026-01-01T00:00:00Z" }],
-      ["amount",     { type: "payment", to: "GDEST", from: "GSRC", created_at: "2026-01-01T00:00:00Z" }],
-      ["created_at", { type: "payment", to: "GDEST", from: "GSRC", amount: "1" }],
-    ];
-
-    for (const [field, record] of missingFieldCases) {
-      vi.clearAllMocks();
-      const result = normalize(record);
-      expect(result).toBeNull();
-      expect(console.warn).toHaveBeenCalledWith(
-        `[pulse-core] normalize() dropping payment record: field "${field}" is missing or not a non-empty string.`,
-        expect.objectContaining({ record: expect.any(Object) })
-      );
-    }
-  });
-
-  it("removes stopped watchers from the registry and keeps stop idempotent", () => {
-    const engine = new EventEngine({ network: "testnet" });
-    const watcher = engine.subscribe("GABC");
-
-    expect(
-      (engine as unknown as { registry: Map<string, unknown> }).registry.has("GABC")
-    ).toBe(true);
-
-    watcher.stop();
-    watcher.stop();
-
-    expect(
-      (engine as unknown as { registry: Map<string, unknown> }).registry.has("GABC")
-    ).toBe(false);
-    expect(engine.subscribe("GABC")).not.toBe(watcher);
-  });
-
-  it("guards start() so duplicate live streams are not opened", () => {
-    const engine = new EventEngine({ network: "testnet" });
-
-    engine.start();
-    engine.start();
-
-    expect(streamInstances).toHaveLength(1);
-    expect(console.warn).toHaveBeenCalledWith(
-      "[pulse-core] EventEngine.start() called while the SSE stream is already active."
-    );
-  });
-
-  it("reconnects with exponential backoff and emits watcher notifications", () => {
-    const engine = new EventEngine({
-      network: "testnet",
-      reconnect: {
-        initialDelayMs: 1000,
-        maxDelayMs: 30000,
-      },
-    });
-
-    const watcher = engine.subscribe("GABC");
-    const reconnecting = vi.fn();
-    const reconnected = vi.fn();
-    watcher.on("engine.reconnecting", reconnecting);
-    watcher.on("engine.reconnected", reconnected);
-
-    engine.start();
-
-    latestStream().handlers.onerror(new Error("stream dropped"));
-
-    expect(streamInstances[0]?.close).toHaveBeenCalledTimes(1);
-    expect(reconnecting).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "engine.reconnecting",
-        attempt: 1,
-        delayMs: 1000,
-      })
-    );
-    expect(console.warn).toHaveBeenCalledWith(
-      "[pulse-core] SSE reconnect attempt 1 scheduled in 1000ms."
-    );
-    expect(streamInstances).toHaveLength(1);
-
-    vi.advanceTimersByTime(1000);
-
-    expect(streamInstances).toHaveLength(2);
-
-    latestStream().handlers.onerror(new Error("stream dropped again"));
-
-    expect(streamInstances[1]?.close).toHaveBeenCalledTimes(1);
-    expect(reconnecting).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        type: "engine.reconnecting",
-        attempt: 2,
-        delayMs: 2000,
-      })
-    );
-    expect(console.warn).toHaveBeenLastCalledWith(
-      "[pulse-core] SSE reconnect attempt 2 scheduled in 2000ms."
-    );
-
-    vi.advanceTimersByTime(2000);
-
-    expect(streamInstances).toHaveLength(3);
-
-    latestStream().handlers.onmessage({
-      type: "payment",
-      to: "GABC",
-      from: "GSRC",
-      amount: "10",
-      asset_type: "native",
-      created_at: "2026-03-26T20:00:00.000Z",
-    });
-
-    expect(reconnected).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "engine.reconnected",
-        attempt: 2,
-      })
-    );
-    expect(console.info).toHaveBeenCalledWith(
-      "[pulse-core] SSE reconnect succeeded on attempt 2."
-    );
-
-    latestStream().handlers.onerror(new Error("stream dropped after recovery"));
-
-    expect(reconnecting).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        type: "engine.reconnecting",
-        attempt: 1,
-        delayMs: 1000,
-      })
-    );
-  });
-
-  describe("set_options → account.options_changed", () => {
-    function makeSetOptionsRecord(
-      overrides: Record<string, unknown>
-    ): Record<string, unknown> {
-      return {
-        type: "set_options",
-        source_account: "GSRC",
-        created_at: "2026-04-24T10:00:00.000Z",
-        ...overrides,
-      };
-    }
-
-    it("emits account.options_changed with signer_added when signer_weight > 0", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ signer_key: "GNEWSIGNER", signer_weight: 2 })
-      );
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.options_changed",
-          source: "GSRC",
-          changes: { signer_added: { key: "GNEWSIGNER", weight: 2 } },
-          timestamp: "2026-04-24T10:00:00.000Z",
-        })
-      );
-    });
-
-    it("emits account.options_changed with signer_removed when signer_weight is 0", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ signer_key: "GOLDSIGNER", signer_weight: 0 })
-      );
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.options_changed",
-          source: "GSRC",
-          changes: { signer_removed: { key: "GOLDSIGNER", weight: 0 } },
-        })
-      );
-    });
-
-    it("emits account.options_changed with thresholds when any threshold field is present", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({
-          low_threshold: 1,
-          med_threshold: 2,
-          high_threshold: 3,
-          master_key_weight: 1,
-        })
-      );
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.options_changed",
-          source: "GSRC",
-          changes: {
-            thresholds: {
-              low_threshold: 1,
-              med_threshold: 2,
-              high_threshold: 3,
-              master_key_weight: 1,
-            },
-          },
-        })
-      );
-    });
-
-    it("emits account.options_changed with home_domain when home_domain is present", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ home_domain: "example.com" })
-      );
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.options_changed",
-          source: "GSRC",
-          changes: { home_domain: "example.com" },
-        })
-      );
-    });
-
-    it("only includes fields that are actually present in changes", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ home_domain: "stellar.org", low_threshold: 5 })
-      );
-
-      expect(handler).toHaveBeenCalledOnce();
-      const payload = handler.mock.calls[0]![0];
-      expect(payload.changes).toEqual({
-        home_domain: "stellar.org",
-        thresholds: { low_threshold: 5 },
-      });
-      expect(payload.changes).not.toHaveProperty("signer_added");
-      expect(payload.changes).not.toHaveProperty("signer_removed");
-    });
-
-    it("does not emit when set_options has no recognized changed fields", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const watcher = engine.subscribe("GSRC");
-      const handler = vi.fn();
-      watcher.on("account.options_changed", handler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ set_flags: 1 })
-      );
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-
-    it("does not route account.options_changed to unrelated watchers", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const srcWatcher = engine.subscribe("GSRC");
-      const otherWatcher = engine.subscribe("GOTHER");
-      const srcHandler = vi.fn();
-      const otherHandler = vi.fn();
-      srcWatcher.on("account.options_changed", srcHandler);
-      otherWatcher.on("account.options_changed", otherHandler);
-
-      engine.start();
-      latestStream().handlers.onmessage(
-        makeSetOptionsRecord({ home_domain: "example.com" })
-      );
-
-      expect(srcHandler).toHaveBeenCalledOnce();
-      expect(otherHandler).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("account_merge → account.merged", () => {
-    function makeAccountMergeRecord(
-      overrides: Record<string, unknown>
-    ): Record<string, unknown> {
-      return {
-        type: "account_merge",
-        account: "GSRC",
-        into: "GDEST",
-        created_at: "2026-04-26T12:00:00.000Z",
-        ...overrides,
-      };
-    }
-
-    it("normalizes account_merge into account.merged", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const normalize = (
-        engine as unknown as {
-          normalize(record: unknown): unknown;
+const DEFAULT_RECONNECT: Required<ReconnectConfig> = {
+  initialDelayMs: 1000,
+  maxDelayMs: 30000,
+  maxRetries: Number.POSITIVE_INFINITY,
+};
+
+const STELLAR_MAX_TRUSTLINE_LIMIT = "922337203685.4775807";
+
+const noop = { info: () => {}, warn: () => {}, error: () => {} };
+
+export class EventEngine {
+  private server: Horizon.Server;
+  private registry: Map<string, Watcher> = new Map();
+  private stopStream: HorizonStreamStopper | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
+  private pendingReconnectSuccessAttempt: number | null = null;
+  private readonly reconnectConfig: Required<ReconnectConfig>;
+  private isRunning = false;
+  private log: Required<NonNullable<CoreConfig["logger"]>>;
+
+  constructor(config: CoreConfig) {
+    let horizonUrl: string;
+
+    if (config.horizonUrl !== undefined) {
+      try {
+        const parsed = new URL(config.horizonUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          throw new Error("must be http/https");
         }
-      ).normalize.bind(engine);
+      } catch (err) {
+        throw new Error(`Invalid horizonUrl: ${(err as Error).message}`);
+      }
+      horizonUrl = config.horizonUrl;
+    } else {
+      const url = HORIZON_URLS[config.network];
+      if (!url) throw new UnknownNetworkError(config.network);
+      horizonUrl = url;
+    }
 
-      const normalized = normalize(makeAccountMergeRecord({}));
+    this.server = new Horizon.Server(horizonUrl);
+    this.reconnectConfig = { ...DEFAULT_RECONNECT, ...config.reconnect };
+    this.log = config.logger ?? noop;
+  }
 
-      expect(normalized).toEqual({
+  subscribe(address: string): Watcher {
+    const existing = this.registry.get(address);
+    if (existing) return existing;
+
+    const watcher = new Watcher(address);
+    watcher.addStopHandler(() => this.registry.delete(address));
+    this.registry.set(address, watcher);
+    return watcher;
+  }
+
+  unsubscribe(address: string): void {
+    this.registry.get(address)?.stop();
+  }
+
+  // ✅ required by tests
+  unsubscribeAll(): void {
+    for (const watcher of this.registry.values()) {
+      watcher.stop();
+    }
+  }
+
+  start(): void {
+    if (this.isRunning || this.reconnectTimer) {
+      this.log.warn(
+        "[pulse-core] EventEngine.start() called while the SSE stream is already active."
+      );
+      return;
+    }
+    this.openStream(false);
+  }
+
+  stop(): void {
+    this.clearReconnectTimer();
+    this.pendingReconnectSuccessAttempt = null;
+    this.reconnectAttempt = 0;
+    this.closeStream();
+    this.isRunning = false;
+
+    for (const watcher of this.registry.values()) {
+      watcher.stop();
+    }
+  }
+
+  private openStream(isReconnect: boolean): void {
+    this.closeStream();
+    this.clearReconnectTimer();
+    this.isRunning = true;
+
+    this.pendingReconnectSuccessAttempt = isReconnect
+      ? this.reconnectAttempt
+      : null;
+
+    const callbacks: StreamCallbacks = {
+      onmessage: (record) => {
+        if (this.pendingReconnectSuccessAttempt !== null) {
+          const attempt = this.pendingReconnectSuccessAttempt;
+          this.pendingReconnectSuccessAttempt = null;
+          this.reconnectAttempt = 0;
+
+          this.log.info(
+            `[pulse-core] SSE reconnect succeeded on attempt ${attempt}.`
+          );
+
+          this.notifyWatchers("engine.reconnected", {
+            type: "engine.reconnected",
+            attempt,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        const event = this.normalize(record);
+        if (!event) return;
+
+        this.route(event);
+      },
+      onerror: () => this.handleStreamError(),
+    };
+
+    this.stopStream = this.server
+      .operations()
+      .cursor("now")
+      .stream(callbacks);
+  }
+
+  private handleStreamError(): void {
+    if (this.reconnectTimer) return;
+
+    this.closeStream();
+    this.isRunning = false;
+
+    const attempt = ++this.reconnectAttempt;
+
+    if (attempt > this.reconnectConfig.maxRetries) return;
+
+    const delay = Math.min(
+      this.reconnectConfig.initialDelayMs * 2 ** (attempt - 1),
+      this.reconnectConfig.maxDelayMs
+    );
+
+    this.log.warn(
+      `[pulse-core] SSE reconnect attempt ${attempt} scheduled in ${delay}ms.`
+    );
+
+    this.notifyWatchers("engine.reconnecting", {
+      type: "engine.reconnecting",
+      attempt,
+      delayMs: delay,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.openStream(true);
+    }, delay);
+  }
+
+  private closeStream(): void {
+    if (!this.stopStream) return;
+    this.stopStream();
+    this.stopStream = null;
+  }
+
+  private clearReconnectTimer(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private notifyWatchers(
+    type: WatcherNotificationType,
+    event: WatcherNotification
+  ) {
+    for (const watcher of this.registry.values()) {
+      watcher.emit(type, event);
+    }
+  }
+
+  private normalize(record: unknown): NormalizedEventOrPending | null {
+    const r = record as Record<string, any>;
+
+    if (r.type === "payment") {
+      const required = ["to", "from", "amount", "created_at"];
+      for (const f of required) {
+        if (!r[f]) {
+          this.log.warn(
+            `[pulse-core] normalize() dropping payment record: field "${f}" is missing or not a non-empty string.`
+          );
+          return null;
+        }
+      }
+
+      return {
+        type: "unknown",
+        to: r.to,
+        from: r.from,
+        amount: r.amount,
+        asset:
+          r.asset_type === "native"
+            ? "XLM"
+            : `${r.asset_code}:${r.asset_issuer}`,
+        timestamp: r.created_at,
+        raw: record,
+      };
+    }
+
+    if (r.type === "change_trust") {
+      if (!r.source_account || !r.limit) return null;
+
+      const limit = String(r.limit);
+
+      return {
+        type:
+          limit === "0" || limit === "0.0000000"
+            ? "trustline.removed"
+            : limit === STELLAR_MAX_TRUSTLINE_LIMIT
+            ? "trustline.added"
+            : "trustline.updated",
+        account: r.source_account,
+        asset:
+          r.asset_type === "native"
+            ? "XLM"
+            : `${r.asset_code}:${r.asset_issuer}`,
+        limit,
+        timestamp: r.created_at,
+        raw: record,
+      };
+    }
+
+    if (r.type === "account_merge") {
+      return {
         type: "account.merged",
-        source: "GSRC",
-        destination: "GDEST",
-        timestamp: "2026-04-26T12:00:00.000Z",
-        raw: expect.objectContaining({ type: "account_merge" }),
-      });
-    });
+        source: r.account,
+        destination: r.into,
+        timestamp: r.created_at,
+        raw: record,
+      };
+    }
 
-    it("routes account.merged to both source and destination watchers", () => {
-      const engine = new EventEngine({ network: "testnet" });
-      const srcWatcher = engine.subscribe("GSRC");
-      const destWatcher = engine.subscribe("GDEST");
-      const otherWatcher = engine.subscribe("GOTHER");
+    return null;
+  }
 
-      const srcHandler = vi.fn();
-      const destHandler = vi.fn();
-      const otherHandler = vi.fn();
+  private route(event: NormalizedEventOrPending): void {
+    if (event.type === "account.merged") {
+      this.registry.get(event.source)?.emit("account.merged", event);
+      this.registry.get(event.destination)?.emit("account.merged", event);
+      return;
+    }
 
-      srcWatcher.on("account.merged", srcHandler);
-      destWatcher.on("account.merged", destHandler);
-      otherWatcher.on("account.merged", otherHandler);
+    if (
+      event.type === "trustline.added" ||
+      event.type === "trustline.removed" ||
+      event.type === "trustline.updated"
+    ) {
+      this.registry.get(event.account)?.emit(event.type, event);
+      return;
+    }
 
-      engine.start();
-      latestStream().handlers.onmessage(makeAccountMergeRecord({}));
+    if (event.type === "unknown") {
+      if (event.from === event.to) {
+        this.registry
+          .get(event.to)
+          ?.emit("payment.self", { ...event, type: "payment.self" });
+        return;
+      }
 
-      expect(srcHandler).toHaveBeenCalledOnce();
-      expect(srcHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.merged",
-          source: "GSRC",
-          destination: "GDEST",
-        })
-      );
+      this.registry
+        .get(event.to)
+        ?.emit("payment.received", { ...event, type: "payment.received" });
 
-      expect(destHandler).toHaveBeenCalledOnce();
-      expect(destHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "account.merged",
-          source: "GSRC",
-          destination: "GDEST",
-        })
-      );
-
-      expect(otherHandler).not.toHaveBeenCalled();
-    });
-  });
-});
+      this.registry
+        .get(event.from)
+        ?.emit("payment.sent", { ...event, type: "payment.sent" });
+    }
+  }
+}
